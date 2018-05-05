@@ -50,7 +50,10 @@ def get_host(device_id):
     # added counter in case of typo in device id
     while (not ip_addr and (cnt < 100)):
         data, addr = sock.recvfrom(512)
-        info = json.loads(data[20:-8])
+        s = data[20:-8]
+        if not isinstance(s, str):
+            s = s.decode()
+        info = json.loads(s)
         gwId = info.get('gwId')
 
         cnt += 1
