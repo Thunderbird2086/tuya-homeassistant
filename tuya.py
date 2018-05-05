@@ -8,6 +8,8 @@ import voluptuous as vol
 from homeassistant.components.switch import SwitchDevice, PLATFORM_SCHEMA
 from homeassistant.const import (CONF_NAME, CONF_HOST, CONF_ID, CONF_SWITCHES, CONF_FRIENDLY_NAME)
 import homeassistant.helpers.config_validation as cv
+import json
+import socket
 from time import time
 from threading import Lock
 
@@ -33,6 +35,29 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
         vol.Schema({cv.slug: SWITCH_SCHEMA}),
 })
 
+ALL_IP = '0.0.0.0'
+
+def get_host(device_id):
+    """Get host IP address from device_id"""
+    UDP_PORT = 6666
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((ALL_IP, UDP_PORT))
+
+    ip_addr = None
+    cnt = 0
+    # added counter in case of typo in device id
+    while (not ip_addr and (cnt < 100)):
+        data, addr = sock.recvfrom(512)
+        info = json.loads(data[20:-8])
+        gwId = info.get('gwId')
+
+        cnt += 1
+        if gwId == device_id:
+            ip_addr = info.get('ip')
+
+    return ip_addr
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     """Set up of the Tuya switch."""
@@ -41,10 +66,15 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     devices = config.get(CONF_SWITCHES)
     switches = []
 
+    host = config.get(CONF_HOST)
+    device_id = config.get(CONF_DEVICE_ID)
+    if host == ALL_IP:
+        host = get_host(device_id)
+
     outlet_device = TuyaCache(
         pytuya.OutletDevice(
-            config.get(CONF_DEVICE_ID),
-            config.get(CONF_HOST),
+            device_id,
+            host,
             config.get(CONF_LOCAL_KEY)
         )
     )
