@@ -6,12 +6,16 @@ https://home-assistant.io/components/switch.tuya/
 """
 import voluptuous as vol
 from homeassistant.components.switch import SwitchDevice, PLATFORM_SCHEMA
-from homeassistant.const import (CONF_NAME, CONF_HOST, CONF_ID, CONF_SWITCHES, CONF_FRIENDLY_NAME)
+from homeassistant.const import (CONF_NAME, CONF_HOST, CONF_ID, CONF_SWITCHES,
+                                 CONF_FRIENDLY_NAME)
 import homeassistant.helpers.config_validation as cv
 import json
+import logging
 import socket
 from time import time
 from threading import Lock
+
+_LOGGER = logging.getLogger(__name__)
 
 REQUIREMENTS = ['pytuya==7.0']
 
@@ -27,7 +31,7 @@ SWITCH_SCHEMA = vol.Schema({
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME): cv.string,
-    vol.Required(CONF_HOST): cv.string,
+    vol.Optional(CONF_HOST): cv.string,
     vol.Required(CONF_DEVICE_ID): cv.string,
     vol.Required(CONF_LOCAL_KEY): cv.string,
     vol.Optional(CONF_ID, default=DEFAULT_ID): cv.string,
@@ -35,32 +39,45 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
         vol.Schema({cv.slug: SWITCH_SCHEMA}),
 })
 
-ALL_IP = '0.0.0.0'
+_ALL_IP = '0.0.0.0'
+_UDP_PORT = 6666
+_DEVICE_CACHE = {}
+
 
 def get_host(device_id):
     """Get host IP address from device_id"""
-    UDP_PORT = 6666
+    global _DEVICE_CACHE
+    ip_addr = _DEVICE_CACHE.get(device_id)
+    if ip_addr:
+        return ip_addr
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((ALL_IP, UDP_PORT))
+    sock.bind((_ALL_IP, _UDP_PORT))
 
-    ip_addr = None
     cnt = 0
     # added counter in case of typo in device id
-    while (not ip_addr and (cnt < 100)):
-        data, addr = sock.recvfrom(512)
-        s = data[20:-8]
-        if not isinstance(s, str):
-            s = s.decode()
-        info = json.loads(s)
-        gwId = info.get('gwId')
+    while (not ip_addr and (cnt < 10)):
+        data, _ = sock.recvfrom(512)
+        str_data = data[20:-8]
+        if not isinstance(str_data, str):
+            str_data = str_data.decode()
+        info = json.loads(str_data)
+        gw_id = info.get('gwId')
+        a_ip_addr = info.get('ip')
+        if gw_id not in _DEVICE_CACHE:
+            _DEVICE_CACHE[gw_id] = a_ip_addr
+        else:
+            if _DEVICE_CACHE[gw_id] != a_ip_addr:
+                _DEVICE_CACHE[gw_id] = a_ip_addr
+
+        if gw_id == device_id:
+            ip_addr = a_ip_addr
 
         cnt += 1
-        if gwId == device_id:
-            ip_addr = info.get('ip')
 
     return ip_addr
+
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     """Set up of the Tuya switch."""
@@ -71,8 +88,9 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
     host = config.get(CONF_HOST)
     device_id = config.get(CONF_DEVICE_ID)
-    if host == ALL_IP:
+    if host in (_ALL_IP, None):
         host = get_host(device_id)
+        _LOGGER.debug("device_id=(%s), host=(%s)", device.id, host)
 
     outlet_device = TuyaCache(
         pytuya.OutletDevice(
@@ -84,24 +102,25 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
     for object_id, device_config in devices.items():
         switches.append(
-                TuyaDevice(
-                    outlet_device,
-                    device_config.get(CONF_FRIENDLY_NAME, object_id),
-                    device_config.get(CONF_ID),
-                )
+            TuyaDevice(
+                outlet_device,
+                device_config.get(CONF_FRIENDLY_NAME, object_id),
+                device_config.get(CONF_ID),
+            )
         )
 
     name = config.get(CONF_NAME)
     if name:
         switches.append(
-                TuyaDevice(
-                    outlet_device,
-                    name,
-                    config.get(CONF_ID)
-                )
+            TuyaDevice(
+                outlet_device,
+                name,
+                config.get(CONF_ID)
+            )
         )
 
     add_devices(switches)
+
 
 class TuyaCache:
     """Cache wrapper for pytuya.OutletDevice"""
@@ -115,17 +134,35 @@ class TuyaCache:
 
     def __get_status(self):
         for i in range(3):
+            self.get_host()
             try:
                 status = self._device.status()
                 return status
+            except socket.timeout:
+                if i+1 == 3:
+                    self._device.address = _ALL_IP
+                    _DEVICE_CACHE.pop(self._device.id)
+                    raise ConnectionError("Failed to update status.")
             except ConnectionError:
                 if i+1 == 3:
+                    self._device.address = _ALL_IP
+                    _DEVICE_CACHE.pop(self._device.id)
                     raise ConnectionError("Failed to update status.")
+
+    def has_host(self):
+        """check if host is valid"""
+        return self._device.address not in (_ALL_IP, None)
+
+    def get_host(self):
+        """get host"""
+        if not self.has_host():
+            self._device.address = get_host(self._device.id)
 
     def set_status(self, state, switchid):
         """Change the Tuya switch status and clear the cache."""
         self._cached_status = ''
         self._cached_status_time = 0
+        self.get_host()
         return self._device.set_status(state, switchid)
 
     def status(self):
@@ -139,6 +176,7 @@ class TuyaCache:
             return self._cached_status
         finally:
             self._lock.release()
+
 
 class TuyaDevice(SwitchDevice):
     """Representation of a Tuya switch."""
@@ -162,13 +200,16 @@ class TuyaDevice(SwitchDevice):
 
     def turn_on(self, **kwargs):
         """Turn Tuya switch on."""
+        self._device.get_host()
         self._device.set_status(True, self._switchid)
 
     def turn_off(self, **kwargs):
         """Turn Tuya switch off."""
+        self._device.get_host()
         self._device.set_status(False, self._switchid)
 
     def update(self):
         """Get state of Tuya switch."""
-        status = self._device.status()
-        self._state = status['dps'][self._switchid]
+        if self._device.has_host():
+            status = self._device.status()
+            self._state = status['dps'][self._switchid]

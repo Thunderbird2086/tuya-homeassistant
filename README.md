@@ -16,7 +16,7 @@ Config Example:
 ```
 switch:
   - platform: tuya
-    # if host is 0.0.0.0,
+    # if host is 0.0.0.0 or missing,
     # then module will find out ip address for the given device id
     host: xxx.xxx.xxx.xxx
     local_key: xxxxxxxxxxxxxxxx
@@ -32,7 +32,7 @@ Multiple switches on a single device:
 ```
 switch:
   - platform: tuya
-    # if host is 0.0.0.0,
+    # if host is 0.0.0.0 or missing,
     # then module will find out ip address for the given device id
     host: xxx.xxx.xxx.xxx
     local_key: xxxxxxxxxxxxxxxx
