@@ -17,7 +17,7 @@ from threading import Lock
 
 _LOGGER = logging.getLogger(__name__)
 
-REQUIREMENTS = ['pytuya==7.0']
+REQUIREMENTS = ['pytuya==7.0.2']
 
 CONF_DEVICE_ID = 'device_id'
 CONF_LOCAL_KEY = 'local_key'
@@ -29,6 +29,7 @@ SWITCH_SCHEMA = vol.Schema({
     vol.Optional(CONF_FRIENDLY_NAME): cv.string,
 })
 
+
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME): cv.string,
     vol.Optional(CONF_HOST): cv.string,
@@ -39,16 +40,17 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
         vol.Schema({cv.slug: SWITCH_SCHEMA}),
 })
 
+
 _ALL_IP = '0.0.0.0'
 _UDP_PORT = 6666
 _DEVICE_CACHE = {}
 
 
-def get_host(device_id):
+def get_host(device_id, refresh=False):
     """Get host IP address from device_id"""
     global _DEVICE_CACHE
     ip_addr = _DEVICE_CACHE.get(device_id)
-    if ip_addr:
+    if ip_addr and not refresh:
         return ip_addr
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -90,8 +92,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     device_id = config.get(CONF_DEVICE_ID)
     if host in (_ALL_IP, None):
         host = get_host(device_id)
-        _LOGGER.debug("device_id=(%s), host=(%s)", device.id, host)
 
+    _LOGGER.debug("device_id=(%s), host=(%s)", device_id, host)
     outlet_device = TuyaCache(
         pytuya.OutletDevice(
             device_id,
@@ -153,10 +155,12 @@ class TuyaCache:
         """check if host is valid"""
         return self._device.address not in (_ALL_IP, None)
 
-    def get_host(self):
+    def get_host(self, refresh=False):
         """get host"""
-        if not self.has_host():
-            self._device.address = get_host(self._device.id)
+        if refresh or not self.has_host():
+            self._device.address = get_host(self._device.id, refresh)
+            _LOGGER.debug("device_id=(%s), host=(%s)",
+                          self._device.id, self._device.address)
 
     def set_status(self, state, switchid):
         """Change the Tuya switch status and clear the cache."""
@@ -200,16 +204,24 @@ class TuyaDevice(SwitchDevice):
 
     def turn_on(self, **kwargs):
         """Turn Tuya switch on."""
-        self._device.get_host()
+        # self._device.get_host()
         self._device.set_status(True, self._switchid)
 
     def turn_off(self, **kwargs):
         """Turn Tuya switch off."""
-        self._device.get_host()
+        # self._device.get_host()
         self._device.set_status(False, self._switchid)
 
     def update(self):
         """Get state of Tuya switch."""
         if self._device.has_host():
-            status = self._device.status()
-            self._state = status['dps'][self._switchid]
+            try:
+                status = self._device.status()
+                dps = status.get('dps')
+                if dps is not None:
+                    self._state = dps[self._switchid]
+            except OSError as e:
+                _LOGGER.debug(e)
+                # _LOGGER.error("failed to get status for device=(%s)",
+                #              self._device.id)
+                self._device.get_host(True)
