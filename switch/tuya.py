@@ -49,15 +49,17 @@ _DEVICE_CACHE = {}
 def get_host(device_id, refresh=False):
     """Get host IP address from device_id"""
     global _DEVICE_CACHE
-    ip_addr = _DEVICE_CACHE.get(device_id)
-    if ip_addr and not refresh:
-        return ip_addr
+    if not refresh:
+        ip_addr = _DEVICE_CACHE.get(device_id)
+        if ip_addr:
+            return ip_addr
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((_ALL_IP, _UDP_PORT))
 
     cnt = 0
+    ip_addr = None
     # added counter in case of typo in device id
     while (not ip_addr and (cnt < 10)):
         data, _ = sock.recvfrom(512)
@@ -166,7 +168,6 @@ class TuyaCache:
         """Change the Tuya switch status and clear the cache."""
         self._cached_status = ''
         self._cached_status_time = 0
-        self.get_host()
         return self._device.set_status(state, switchid)
 
     def status(self):
@@ -204,13 +205,21 @@ class TuyaDevice(SwitchDevice):
 
     def turn_on(self, **kwargs):
         """Turn Tuya switch on."""
-        # self._device.get_host()
-        self._device.set_status(True, self._switchid)
+        try:
+            self._device.set_status(True, self._switchid)
+        except OSError as e:
+            self._device.get_host(True)
+            if self._device.has_host():
+                self._device.set_status(True, self._switchid)
 
     def turn_off(self, **kwargs):
         """Turn Tuya switch off."""
-        # self._device.get_host()
-        self._device.set_status(False, self._switchid)
+        try:
+            self._device.set_status(False, self._switchid)
+        except OSError as e:
+            self._device.get_host(True)
+            if self._device.has_host():
+                self._device.set_status(False, self._switchid)
 
     def update(self):
         """Get state of Tuya switch."""
